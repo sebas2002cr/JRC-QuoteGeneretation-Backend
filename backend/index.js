@@ -91,8 +91,6 @@ app.post("/login", async (req, res) => {
 
 app.post("/save-quotation", async (req, res) => {
     try {
-      console.log("Datos recibidos:", req.body);
-  
       const {
         tipoPlan,
         planSeleccionado,
@@ -107,40 +105,20 @@ app.post("/save-quotation", async (req, res) => {
         facturasRecibidas,
         transacciones,
         totalCost,
-        user, // Información del usuario que creó la cotización
-        cliente, // Información del cliente
+        idiomaCotizacion, // Este valor debe estar presente
+        tipoMoneda,       // Este valor debe estar presente
+        tipoCambio,       // Este valor debe estar presente
+        user,
+        cliente,
       } = req.body;
   
+      console.log("Datos recibidos en el backend:", req.body);
+  
       if (!tipoPlan || !cliente || !user) {
-        return res.status(400).json({
-          success: false,
-          error: "Faltan datos requeridos (tipoPlan, cliente o user).",
-        });
-      }
-      
-      if (!cliente.nombre || !cliente.apellido || !cliente.correo) {
-        return res.status(400).json({
-          success: false,
-          error: "Faltan datos requeridos del cliente.",
-        });
-      }
-      
-      // Aquí puedes validar los datos antes de guardarlos
-      if (
-        !tipoPlan ||
-        !cliente ||
-        !cliente.nombre ||
-        !cliente.apellido ||
-        !cliente.cedula ||
-        !cliente.correo ||
-        !cliente.telefono
-      ) {
-        return res.status(400).json({
-          success: false,
-          error: "Faltan datos requeridos en la solicitud.",
-        });
+        return res.status(400).json({ error: "Faltan datos requeridos." });
       }
   
+      // Crear el objeto de la cotización
       const newQuotation = {
         tipoPlan,
         planSeleccionado,
@@ -155,6 +133,9 @@ app.post("/save-quotation", async (req, res) => {
         facturasRecibidas,
         transacciones,
         totalCost,
+        idiomaCotizacion, // Guardar en Firestore
+        tipoMoneda,       // Guardar en Firestore
+        tipoCambio,       // Guardar en Firestore
         user: {
           email: user.email,
           fullName: user.fullName,
@@ -167,9 +148,12 @@ app.post("/save-quotation", async (req, res) => {
           telefono: cliente.telefono,
           direccion: cliente.direccion,
         },
+        isDeleted: false, // Nuevo campo con valor predeterminado
+        deletedBy: null,  // Nuevo campo para almacenar el usuario que elimina
         createdAt: admin.firestore.Timestamp.now(),
       };
   
+      // Guardar en Firestore
       const docRef = await db.collection("Quotations").add(newQuotation);
   
       res.status(200).json({
@@ -179,16 +163,19 @@ app.post("/save-quotation", async (req, res) => {
       });
     } catch (error) {
       console.error("Error al guardar la cotización:", error);
-      res.status(500).json({
-        success: false,
-        error: "Error al guardar la cotización.",
-      });
+      res.status(500).json({ error: "Error al guardar la cotización." });
     }
   });
   
+  
+  
 app.get("/get-quotations", async (req, res) => {
 try {
-    const quotationsSnapshot = await db.collection("Quotations").orderBy("createdAt", "desc").get();
+    const quotationsSnapshot = await db
+    .collection("Quotations")
+    .where("isDeleted", "==", false) // Filtrar cotizaciones no eliminadas
+    .orderBy("createdAt", "desc")   // Ordenar por fecha de creación
+    .get();
 
     const quotations = quotationsSnapshot.docs.map((doc) => ({
     id: doc.id,
@@ -207,6 +194,33 @@ try {
     });
 }
 });
+  
+app.get("/get-quotations-deleted", async (req, res) => {
+    try {
+        const quotationsSnapshot = await db
+        .collection("Quotations")
+        .where("isDeleted", "==", true) // Filtrar cotizaciones no eliminadas
+        .orderBy("createdAt", "desc")   // Ordenar por fecha de creación
+        .get();
+    
+        const quotations = quotationsSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        }));
+    
+        res.status(200).json({
+        success: true,
+        quotations,
+        });
+    } catch (error) {
+        console.error("Error al obtener las cotizaciones:", error);
+        res.status(500).json({
+        success: false,
+        error: "Error al obtener las cotizaciones.",
+        });
+    }
+    });
+  
 
 app.put("/update-quotation/:id", async (req, res) => {
     const { id } = req.params; // Obtén el ID de la cotización desde los parámetros de la URL
@@ -251,18 +265,29 @@ app.put("/update-quotation/:id", async (req, res) => {
     }
   });
   
-app.delete("/delete-quotation/:id", async (req, res) => {
+app.put("/delete-quotation/:id", async (req, res) => {
 const { id } = req.params;
+const { deletedBy } = req.body; // Usuario que elimina la cotización
 
 try {
-    await db.collection("Quotations").doc(id).delete();
-    res.status(200).json({ success: true, message: "Cotización eliminada exitosamente." });
+    if (!deletedBy) {
+    return res.status(400).json({ success: false, error: "Falta el usuario que elimina la cotización." });
+    }
+
+    // Actualizar el documento en Firestore
+    await db.collection("Quotations").doc(id).update({
+    isDeleted: true,  // Marcar como eliminada
+    deletedBy,        // Guardar el usuario que eliminó
+    deletedAt: admin.firestore.Timestamp.now(), // Guardar la fecha de eliminación
+    });
+
+    res.status(200).json({ success: true, message: "Cotización marcada como eliminada exitosamente." });
 } catch (error) {
-    console.error("Error al eliminar la cotización:", error);
-    res.status(500).json({ success: false, error: "Error al eliminar la cotización." });
+    console.error("Error al marcar como eliminada la cotización:", error);
+    res.status(500).json({ success: false, error: "Error al marcar como eliminada la cotización." });
 }
 });
-
+  
 app.get("/get-users", async (req, res) => {
     try {
       const usersSnapshot = await db.collection("Users").get();
@@ -385,6 +410,56 @@ try {
 } catch (error) {
     console.error("Error al eliminar usuario:", error);
     res.status(500).json({ error: "Error al eliminar el usuario." });
+}
+});
+
+app.put("/restore-quotation/:id", async (req, res) => {
+    const { id } = req.params; // Capturar el ID desde los parámetros de la URL
+    
+    try {
+      // Referencia al documento en Firestore
+      const docRef = db.collection("Quotations").doc(id);
+      const doc = await docRef.get();
+  
+      // Verificar si el documento existe
+      if (!doc.exists) {
+        console.error("La cotización no existe en Firestore:", id);
+        return res.status(404).json({ success: false, error: "La cotización no existe." });
+      }
+
+      // Actualizar el documento en Firestore
+      await docRef.update({
+        isDeleted: false,
+        deletedBy: null,
+        deletedAt: null,
+      });
+  
+      res.status(200).json({ success: true, message: "Cotización reestablecida exitosamente." });
+    } catch (error) {
+      res.status(500).json({ success: false, error: "Error al reestablecer la cotización." });
+    }
+  });
+  
+  
+app.delete("/delete-quotation-permanently/:id", async (req, res) => {
+const { id } = req.params;
+
+try {
+    // Verificar si el documento existe
+    const docRef = db.collection("Quotations").doc(id);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+    return res.status(404).json({ success: false, error: "La cotización no existe." });
+    }
+
+    // Eliminar el documento de Firestore
+    await docRef.delete();
+
+    res.status(200).json({ success: true, message: "Cotización eliminada definitivamente." });
+} catch (error) {
+    console.error("Error al eliminar definitivamente la cotización:", error);
+    res.status(500).json({ success: false, error: "Error al eliminar definitivamente la cotización." });
 }
 });
   
